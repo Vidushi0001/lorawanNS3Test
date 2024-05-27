@@ -1,3 +1,7 @@
+/*
+ * Example script to simulate a LoRaWAN network with a single end device and gateway.
+ */
+
 #include "ns3/building-allocator.h"
 #include "ns3/building-penetration-loss.h"
 #include "ns3/buildings-helper.h"
@@ -20,173 +24,94 @@
 #include "ns3/position-allocator.h"
 #include "ns3/random-variable-stream.h"
 #include "ns3/simulator.h"
-#include "ns3/socket.h" // Include the Socket header
-#include "ns3/ipv4-address.h" // Include the IPv4Address header
+#include "ns3/lora-packet-tracker.h"
+#include "ns3/lora-frame-header.h"
+#include "ns3/network-server.h"
+#include "ns3/core-module.h"
+#include "ns3/network-module.h"
+#include "ns3/mobility-module.h"
+#include "ns3/lora-channel.h"
 
-
-#include <algorithm>
-#include <ctime>
-
-#define BEACON_DATA_RATE 3 // Example data rate for beacon
-#define BEACON_FREQUENCY 923.3 // Example frequency for beacon (in MHz)
-#define BEACON_PREAMBLE_LENGTH 10 // Example preamble length for beacon
 
 using namespace ns3;
 using namespace lorawan;
 
-// Define variables for throughput and packet statistics tracking
-uint64_t totalBitsTransmitted = 0;
-uint32_t totalPacketsTransmitted = 0;
-uint32_t totalPacketsReceived = 0;
-uint32_t totalPacketsDropped = 0;
-Time lastStatsUpdateTime = Seconds(0);
+NS_LOG_COMPONENT_DEFINE("SimpleLorawanNetworkExample");
 
-void ReceivePacket (Ptr<Socket> socket)
+int main(int argc, char *argv[]) 
 {
-  while (socket->Recv ())
-  {
-    NS_LOG_UNCOND ("Received one packet!");
-    totalPacketsReceived++;
-  }
-}
+    // Enable logging for debugging purposes (optional)
+    LogComponentEnable("LoraHelper", LOG_LEVEL_INFO);
+    LogComponentEnable("LoraChannel", LOG_LEVEL_INFO);
+    LogComponentEnable("LoraPhy", LOG_LEVEL_INFO);
+    LogComponentEnable("LoraMac", LOG_LEVEL_INFO);
 
-void FailedReception(Ptr<const Packet> packet)
-{
-  NS_LOG_UNCOND ("Failed to receive packet!");
-  totalPacketsDropped++;
-}
+    // Create a NodeContainer
+    NodeContainer endDevices;
+    endDevices.Create(2); // Create two nodes: one for gateway, one for end device
 
-void SendBeacon (Ptr<Node> gateway, Ptr<GatewayLorawanMac> gatewayMac, Ptr<LoraPhy> gatewayPhy)
-{
-  NS_LOG_UNCOND ("Sending beacon");
+    // Set up the mobility model
+    MobilityHelper mobility;
+    mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    mobility.Install(endDevices);
 
-  Ptr<Packet> beaconPacket = Create<Packet> ();
+    // Create a LoraHelper
+    Ptr<LoraHelper> loraHelper = CreateObject<LoraHelper>();
 
-  LorawanMacHeader beaconHeader;
-   beaconHeader.SetMType (LorawanMacHeader::BEACON); // Use SetMType instead of SetType
-  beaconPacket->AddHeader (beaconHeader);
+    // Create a LoraChannelHelper
+   Ptr<LoraChannel> channelHelper = CreateObject<LoraChannel>();
 
-  LoraTag tag;
-  tag.SetDataRate (BEACON_DATA_RATE);
-  tag.SetFrequency (BEACON_FREQUENCY);
-  beaconPacket->AddPacketTag (tag);
+    // Create a LoraPhyHelper
+    LoraPhyHelper phyHelper;
+   
 
-  // Use the gateway MAC to send the beacon
-  gatewayMac->Send (beaconPacket);
+    // Create a LorawanMacHelper
+    LorawanMacHelper macHelper = LorawanMacHelper();
 
-  // Update statistics for beacon packet
-  totalBitsTransmitted += beaconPacket->GetSize() * 8;
-  totalPacketsTransmitted++;
+    // Install devices on the nodes
+    NetDeviceContainer devices = loraHelper->Install(phyHelper, macHelper, endDevices);
 
-  Simulator::Schedule (Seconds (128), &SendBeacon, gateway, gatewayMac, gatewayPhy);
-}
+    // Set frequency for both devices
+    double frequency = 868000000.0; // Example frequency in Hz (868 MHz for EU868 band)
+     // Set the channel for the physical layer helper
+phyHelper.SetChannel(channelHelper);
+channelHelper->SetFrequency(frequency);
 
-void UpdateStatistics()
-{
-  Time now = Simulator::Now();
+    // Create a beacon packet
+    Ptr<Packet> beaconPacket = Create<Packet>(100); // Example of creating a packet with 100 bytes payload
 
-  // Calculate throughput
-  double elapsedTime = (now - lastStatsUpdateTime).GetSeconds();
-  double throughput = totalBitsTransmitted / elapsedTime;
+    // Create a GatewayLorawanMac instance
+    Ptr<GatewayLorawanMac> gatewayMac = CreateObject<GatewayLorawanMac>();
+    Ptr<ClassAEndDeviceLorawanMac> classAEndDeviceLorawanMac = CreateObject<ClassAEndDeviceLorawanMac>();
 
-  // Output statistics
-  NS_LOG_UNCOND("Throughput: " << throughput << " bps");
-  NS_LOG_UNCOND("Total packets transmitted: " << totalPacketsTransmitted);
-  NS_LOG_UNCOND("Total packets received: " << totalPacketsReceived);
-  NS_LOG_UNCOND("Total packets dropped: " << totalPacketsDropped);
+    // Set the devices to use these MACs
+    devices.Get(0)->GetObject<LoraNetDevice>()->SetMac(gatewayMac);
+    devices.Get(1)->GetObject<LoraNetDevice>()->SetMac(classAEndDeviceLorawanMac);
 
-  // Reset counters
-  totalBitsTransmitted = 0;
-  totalPacketsTransmitted = 0;
-  totalPacketsReceived = 0;
-  totalPacketsDropped = 0;
-  lastStatsUpdateTime = now;
+    // Send the beacon packet using the GatewayLorawanMac
+    gatewayMac->Send(beaconPacket);
+    classAEndDeviceLorawanMac->Receive(beaconPacket);
 
-  // Schedule the next statistics update
-  Simulator::Schedule(Seconds(1), &UpdateStatistics);
-}
+    // After a few seconds of sending beacon, create a normal packet to be transmitted to the gateway
+    Simulator::Schedule(Seconds(2.0), &ClassAEndDeviceLorawanMac::Send, classAEndDeviceLorawanMac, beaconPacket);
 
-int main (int argc, char *argv[])
-{
-  // Set up logging
-  LogComponentEnable ("LoraChannel", LOG_LEVEL_ALL);
-  LogComponentEnable ("LoraPhy", LOG_LEVEL_ALL);
-  LogComponentEnable ("LoraInterferenceHelper", LOG_LEVEL_ALL);
-  LogComponentEnable ("LoraTxCurrent", LOG_LEVEL_ALL);
-  LogComponentEnable ("LoraRxCurrent", LOG_LEVEL_ALL);
-  LogComponentEnable ("LoraFrameHeader", LOG_LEVEL_ALL);
-  LogComponentEnable ("LoraMacHeader", LOG_LEVEL_ALL);
-  LogComponentEnable ("GatewayLorawanMac", LOG_LEVEL_ALL);
-  LogComponentEnable ("ClassAEndDeviceLorawanMac", LOG_LEVEL_ALL);
+    // Set up a periodic sender to send beacon packets periodically
+    ApplicationContainer senderApps;
+    Ptr<UniformRandomVariable> rv = CreateObject<UniformRandomVariable>();
+    for (uint32_t i = 0; i < endDevices.GetN(); ++i)
+    {
+        Ptr<PeriodicSender> app = CreateObject<PeriodicSender>();
+        app->SetInterval(Seconds(10)); // Set the interval for sending packets (e.g., every 10 seconds)
+        app->SetPacketSize(100);
+        endDevices.Get(i)->AddApplication(app);
+        app->SetStartTime(Seconds(0));
+        app->SetStopTime(Seconds(100));
+        senderApps.Add(app);
+    }
 
-  // Create the helper
-  LoraHelper helper;
+    Simulator::Stop(Seconds(100)); // Assuming you want to stop simulation after 100 seconds
+    Simulator::Run();
+    Simulator::Destroy();
 
-  // Create a channel
-  Ptr<LoraChannel> channel = CreateObject<LoraChannel> ();
-
-  // Create a single gateway node
-  NodeContainer gateways;
-  gateways.Create (1);
-  Ptr<Node> gateway = gateways.Get (0);
-
-  // Create end device nodes
-  NodeContainer endDevices;
-  endDevices.Create (1);
-  Ptr<Node> endDevice = endDevices.Get (0);
-
-  // Create mobility models
-  MobilityHelper mobility;
-  mobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
-
-  mobility.Install (gateways);
-  mobility.Install (endDevices);
-
-  // Create the LoraPhyHelper
-  LoraPhyHelper phyHelper = LoraPhyHelper ();
-  phyHelper.SetChannel (channel);
-
-  // Create the LoraMacHelper
-  LoraMacHelper macHelper = LoraMacHelper ();
-
-  // Create the LoraNetDeviceHelper
-  LoraNetDeviceHelper netDeviceHelper = LoraNetDeviceHelper ();
-  netDeviceHelper.SetPhyHelper (phyHelper);
-  netDeviceHelper.SetMacHelper (macHelper);
-
-  // Install the net devices on the gateway
-  NetDeviceContainer gatewayDevices = netDeviceHelper.Install (gateways);
-  Ptr<NetDevice> gatewayDevice = gatewayDevices.Get (0);
-  Ptr<GatewayLorawanMac> gatewayMac = gatewayDevice->GetObject<GatewayLorawanMac> ();
-  Ptr<LoraPhy> gatewayPhy = gatewayDevice->GetObject<LoraNetDevice> ()->GetPhy ();
-
-  // Install the net devices on the end device
-  NetDeviceContainer endDeviceDevices = netDeviceHelper.Install (endDevices);
-  Ptr<NetDevice> endDeviceDevice = endDeviceDevices.Get (0);
-  Ptr<ClassAEndDeviceLorawanMac> endDeviceMac = endDeviceDevice->GetObject<ClassAEndDeviceLorawanMac> ();
-  Ptr<LoraPhy> endDevicePhy = endDeviceDevice->GetObject<LoraNetDevice> ()->GetPhy ();
-
-  // Set up applications
-  TypeId tid = TypeId::LookupByName ("ns3::UdpSocketFactory");
-  Ptr<Socket> recvSink = Socket::CreateSocket (endDevice, tid);
-  InetSocketAddress local = InetSocketAddress (Ipv4Address::GetAny (), 80);
-  recvSink->Bind (local);
-  recvSink->SetRecvCallback (MakeCallback (&ReceivePacket));
-
-  Ptr<Socket> source = Socket::CreateSocket (gateway, tid);
-  InetSocketAddress remote = InetSocketAddress (Ipv4Address ("255.255.255.255"), 80);
-  source->SetAllowBroadcast (true);
-  source->Connect (remote);
-
-  // Schedule the first beacon transmission
-  Simulator::Schedule (Seconds (0), &SendBeacon, gateway, gatewayMac, gatewayPhy);
-
-  // Schedule statistics update
-  Simulator::Schedule(Seconds(1), &UpdateStatistics);
-
-  // Run simulation
-  Simulator::Run ();
-  Simulator::Destroy ();
-
-  return 0;
+    return 0;
 }
